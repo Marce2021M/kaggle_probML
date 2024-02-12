@@ -1,0 +1,178 @@
+---
+title: "Titanic"
+lang: es
+author: 
+  - Marcelino Sánchez Rodríguez 191654
+date: today
+format:
+  pdf:
+    latex_engine: xelatex
+message: false
+warnings: false
+---
+
+```{r}
+library(randomForest)
+library(tidyverse)
+library(patchwork)
+library(scales)
+
+## Paquetes de arboles
+library(tidymodels)
+library(rpart.plot)
+library(vip)
+library(textrecipes)
+library(discrim)
+library(corrr)
+library(paletteer)
+
+library(ggplot2)
+
+library(kknn)
+library(MASS)
+library(ranger)
+library(glmnet)
+library(xgboost)
+library(klaR)
+
+# convertimos valores nulos a missing
+
+library(forcats)
+
+```
+
+```{r}
+library(h2o)
+
+```
+
+```{r}
+train <- read.csv(paste0(getwd(),'/data/train.csv'), stringsAsFactors = F)
+test  <- read.csv(paste0(getwd(),'/data/test.csv'), stringsAsFactors = F)
+
+full <- bind_rows(train, test)
+```
+
+```{r}
+# check data
+str(full)
+```
+
+```{r}
+unique(full$Parch)
+```
+
+```{r}
+# Grab title from passenger names
+full$Title <- gsub('(.*, )|(\\..*)', '', full$Name)
+train$Title <- gsub('(.*, )|(\\..*)', '', train$Name)
+test$Title <- gsub('(.*, )|(\\..*)', '', test$Name)
+```
+
+```{r}
+train  <- train %>% 
+  #mutate(Survived = factor(Survived, levels = c(0, 1), labels = c('No', #'Yes'))) %>% 
+  dplyr::select(-c(Name, Ticket))
+
+
+first_rec <- 
+  recipes::recipe(Survived ~ ., data = train)  %>%  
+  step_rm(PassengerId) %>%
+  step_mutate(Pclass = as.factor(Pclass),
+              SibSp = as.factor(SibSp),
+              Parch = as.factor(Parch),
+              Survived = as.factor(Survived), 
+              Sex = as.factor(Sex),
+              Cabin = as.factor(Cabin),
+              Embarked = as.factor(Embarked),
+              Title = as.factor(Title)) %>%
+  step_impute_knn(c(Age, Fare))
+  
+
+prepared_rec <- prep(first_rec)
+ 
+bakedData <- bake(prepared_rec, new_data = train)
+
+
+
+```
+
+```{r}
+h2o.init()
+```
+
+```{r}
+h2o_bakedData <- as.h2o(bakedData)
+splits <- h2o.splitFrame(data = h2o_bakedData, ratios = 0.8, seed = 1234)
+train_h2o <- splits[[1]]
+test_h2o <- splits[[2]]
+
+```
+
+```{r}
+automl_models <- h2o.automl(y = "Survived", training_frame = train_h2o, max_runtime_secs = 60, seed = 1)
+
+```
+
+```{r}
+leaderboard <- automl_models@leaderboard
+print(leaderboard)
+
+```
+
+```{r}
+best_model <- automl_models@leader
+predictions <- h2o.predict(best_model, test_h2o)
+
+```
+
+```{r}
+test  <- test %>% 
+  #mutate(Survived = factor(Survived, levels = c(0, 1), labels = c('No', #'Yes'))) %>% 
+  dplyr::select(-c(Name, Ticket))
+
+second_rec <- 
+  recipes::recipe(Sex ~ ., data = test)  %>%  
+  step_mutate(Pclass = as.factor(Pclass),
+              SibSp = as.factor(SibSp),
+              Parch = as.factor(Parch),
+              Sex = as.factor(Sex),
+              Cabin = as.factor(Cabin),
+              Embarked = as.factor(Embarked),
+              Title = as.factor(Title)) %>%
+  step_impute_knn(c(Age, Fare))
+
+preparedTest_rec <- prep(second_rec)
+ 
+bakedDataTest <- bake(preparedTest_rec, new_data = test)
+
+test_h2oDEF <- as.h2o(bakedDataTest)
+
+predictions <- h2o.predict(best_model, test_h2oDEF)
+
+```
+
+```{r}
+# Assuming the second column of `predictions` contains the probabilities for the positive class (usually '1')
+predicted_classes <- predictions[,1]  # Adjust the index if necessary
+predicted_classes_df <- as.data.frame(predicted_classes)
+
+submissionDATA <- data.frame(PassengerId = test$PassengerId, Survived =as.numeric(predicted_classes_df$predict)-1)
+
+#convert to read.csv
+write.csv(submissionDATA, file = "submission.csv", row.names = FALSE)
+
+```
+
+```{r}
+print(best_model)
+```
+
+```{r}
+# Get model details in JSON format
+model_details <- h2o.getModelDetails(best_model, jsonify = TRUE)
+
+# If you want to pretty-print the JSON for easier reading, you can use:
+cat(model_details)
+
+```
